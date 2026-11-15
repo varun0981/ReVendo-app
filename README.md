@@ -109,6 +109,27 @@ To use Atlas instead of the bundled local MongoDB, set `MONGO_URI` in the root `
 
 For a production deployment, set `NODE_ENV=production`, use HTTPS at the public edge, configure real mail/SMS delivery as needed, and keep all credentials in a deployment secret manager or an untracked environment file.
 
+## Jenkins CI/CD
+
+The root `Jenkinsfile` checks out the configured SCM, runs frontend lint/build and backend tests, builds both Docker images, and publishes build-number and `latest` tags to Docker Hub from the `main` branch only. Feature branches still run checks and image builds but do not publish. This pipeline does not deploy to EC2.
+
+### Jenkins prerequisites
+
+- Use a **Multibranch Pipeline** job connected to this GitHub repository, with the `main` branch discovered. `checkout scm` uses that job's configured GitHub source; add a GitHub credential to the source only if the repository is private.
+- The Jenkins agent needs Node.js 22.12+ with npm, Docker CLI access to a Docker daemon, and network access to npm and Docker Hub.
+- Install the Pipeline, GitHub Branch Source, and Credentials Binding plugins. Install/configure the Jenkins Mailer plugin only if email notifications are desired.
+- Create the Docker Hub repositories `revendo-frontend` and `revendo-backend` under the publishing account or organization.
+
+### Docker Hub credentials
+
+In **Manage Jenkins → Credentials**, add a **Username with password** credential with ID `revendo-dockerhub`. Use the Docker Hub username for the username and a Docker Hub access token with repository write permission for the password. Do not put the token in the Jenkinsfile, repository, build parameters, or README. By default, images are pushed under the credential's username. To publish under an organization, set the non-secret Jenkins environment variable `DOCKERHUB_NAMESPACE` to that organization name.
+
+The `main` branch publishes both `BUILD_NUMBER` and `latest` tags. The push stage uses an isolated temporary Docker credential directory and removes it after pushing. Jenkins agents that build untrusted pull requests should not have Docker Hub credentials available to those jobs.
+
+### Optional email notifications
+
+Configure SMTP in Jenkins' Mailer settings and set the non-secret `NOTIFICATION_EMAIL` environment variable on the job or folder. When it is unset, the pipeline skips email and records that choice in the build log.
+
 ## Local verification modes
 
 - **Email:** without SMTP settings, verification uses a development link printed by the server. No email is sent.
