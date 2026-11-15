@@ -2,6 +2,8 @@
 
 ### Give Good Things a Second Life.
 
+[![ReVendo CI/CD](https://github.com/varun0981/ReVendo-app/actions/workflows/revendo-ci-cd.yml/badge.svg?branch=main)](https://github.com/varun0981/ReVendo-app/actions/workflows/revendo-ci-cd.yml)
+
 ReVendo is a responsive marketplace for buying and selling pre-loved products. It pairs a React storefront with an Express API and MongoDB, including seller listings, moderation, wishlists, orders, and an admin dashboard.
 
 ## Features
@@ -126,9 +128,71 @@ In **Manage Jenkins → Credentials**, add a **Username with password** credenti
 
 The `main` branch publishes both `BUILD_NUMBER` and `latest` tags. The push stage uses an isolated temporary Docker credential directory and removes it after pushing. Jenkins agents that build untrusted pull requests should not have Docker Hub credentials available to those jobs.
 
+If GitHub Actions is the selected image publisher, disable Jenkins' Docker Hub push stage before enabling the Actions publisher. Both pipelines otherwise update the same `latest` tags.
+
 ### Optional email notifications
 
 Configure SMTP in Jenkins' Mailer settings and set the non-secret `NOTIFICATION_EMAIL` environment variable on the job or folder. When it is unset, the pipeline skips email and records that choice in the build log.
+
+## GitHub Actions CI/CD
+
+The [ReVendo CI/CD workflow](.github/workflows/revendo-ci-cd.yml) runs on pushes to `main`, pull requests targeting `main`, and manual `workflow_dispatch`. A forked pull request can run checks and Docker builds, but never receives Docker Hub or deployment credentials. The badge above reports the live GitHub Actions status; local validation is not a GitHub Actions run.
+
+```mermaid
+flowchart LR
+    A[Push to main, PR to main, or manual run] --> B[Frontend: npm ci, lint, production build]
+    A --> C[Backend: npm ci, unit tests]
+    B --> D[Docker image build validation]
+    C --> D
+    D -->|Successful push to canonical main only| E[Docker Hub: commit SHA and latest]
+    E --> F{ENABLE_EC2_DEPLOY is true?}
+    F -->|No: default| G[No deployment]
+    F -->|Yes| H[Protected production environment, SSH, health check, rollback]
+```
+
+### Workflow stages and monitoring
+
+1. **Frontend** installs from `client/package-lock.json`, runs `npm run lint`, and creates the Vite production build.
+2. **Backend** installs from `server/package-lock.json` and runs `npm test`. The current Node test suite uses mocked gateway calls and does not require MongoDB or production database credentials.
+3. **Docker build validation** builds both existing Dockerfiles for `linux/amd64` and `linux/arm64` on pushes, pull requests, and manual runs without authenticating or publishing.
+4. **Docker Hub push** runs only after all checks pass on a push to this repository's `main` branch. It publishes multi-platform images tagged with the full commit SHA and `latest`.
+5. **EC2 deployment** depends on the successful image push and is disabled unless the repository variable `ENABLE_EC2_DEPLOY` is set to the exact string `true`.
+
+Open the repository's **Actions** tab to monitor runs, inspect job logs, cancel a run, or choose **ReVendo CI/CD → Run workflow** for a manual CI/build-only run. Manual runs do not publish images or deploy.
+
+### GitHub Actions secrets and Docker Hub images
+
+Add these repository secrets under **Settings → Secrets and variables → Actions** before merging the workflow to `main`:
+
+| Secret | Purpose |
+| --- | --- |
+| `DOCKERHUB_USERNAME` | Docker Hub account username (`varun0981`) |
+| `DOCKERHUB_TOKEN` | Docker Hub access token with write access to the two image repositories |
+
+Ensure GitHub Actions is enabled for the repository, then push this workflow to `main` or merge a pull request containing it. The `main` push will run CI and attempt the Docker Hub publish; add both secrets first so that stage can authenticate.
+
+The published images are `varun0981/revendo-frontend:<commit-sha>` and `varun0981/revendo-backend:<commit-sha>`, with `latest` also updated on successful `main` pushes. Each tag supports `linux/amd64` and `linux/arm64`. Keep both Docker Hub repositories available to the publisher. For EC2 pulls, make them public or separately configure a read-only pull credential on the instance; never reuse the CI push token there.
+
+### Future EC2 deployment (disabled)
+
+No EC2 deployment is performed by default. To prepare it, create a protected GitHub Environment named `production`, configure required reviewers, and add these **environment secrets**:
+
+| Secret | Purpose |
+| --- | --- |
+| `EC2_HOST` | User-provided EC2 public DNS name or IPv4 address |
+| `EC2_USER` | SSH account configured on that instance |
+| `EC2_SSH_PRIVATE_KEY` | Private key authorized for that account |
+| `EC2_KNOWN_HOSTS` | Verified SSH host-key line(s); do not disable host-key checking |
+| `PRODUCTION_MONGO_URI` | Production MongoDB/Atlas connection URI |
+| `PRODUCTION_JWT_SECRET` | Private session-signing value of at least 32 characters |
+| `PRODUCTION_SMTP_HOST`, `PRODUCTION_SMTP_USER`, `PRODUCTION_SMTP_PASSWORD` | Mail delivery required for production email verification |
+| `PRODUCTION_TWILIO_ACCOUNT_SID`, `PRODUCTION_TWILIO_AUTH_TOKEN`, `PRODUCTION_TWILIO_FROM_NUMBER` | Optional real SMS delivery settings |
+
+Set these non-secret repository variables: `ENABLE_EC2_DEPLOY` (leave unset or `false` until explicitly ready), `EC2_DEPLOY_PATH` (safe absolute path on the instance), `PRODUCTION_CLIENT_URL` (public HTTPS origin), and optionally `EC2_SSH_PORT`, `PRODUCTION_SMTP_PORT`, `PRODUCTION_SMTP_SECURE`, and `PRODUCTION_EMAIL_FROM`. The production Compose file uses the SHA-pinned images and a persistent uploads volume; it expects MongoDB to be provided externally.
+
+The deploy job uses pinned `known_hosts` data and strict SSH host-key checking. It writes the runtime `.env` on the instance with restrictive permissions, waits for Docker health checks, and probes the API through Nginx. On failure it restores the prior Compose configuration and environment and attempts to bring the previous SHA-tagged release back up. Keep prior SHA images in Docker Hub; an initial deployment has no prior release to roll back to.
+
+This SSH path does **not** need AWS access keys or an AWS secret key, and none are supplied or invented. Restrict SSH network access to a trusted runner; a self-hosted runner in the VPC or a later SSM/OIDC design is preferable to opening SSH broadly. Terminate TLS in a configured load balancer or reverse proxy and allow the app's port `8080` only from that proxy. Do not set `ENABLE_EC2_DEPLOY=true` until the host, SSH trust, production database, HTTPS origin, required email delivery, and environment approvals are configured.
 
 ## Local verification modes
 

@@ -1,0 +1,56 @@
+services:
+  backend:
+    image: varun0981/revendo-backend:${IMAGE_TAG:?Set IMAGE_TAG to a pushed commit SHA}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5051
+      CLIENT_URL: ${CLIENT_URL:?Set CLIENT_URL to the public HTTPS origin}
+      MONGO_URI: ${MONGO_URI:?Set MONGO_URI to a production MongoDB URI}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET to a private 32-character secret}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+    expose:
+      - "5051"
+    volumes:
+      - revendo_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5051/api/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    stop_grace_period: 15s
+    networks:
+      - revendo
+
+  frontend:
+    image: varun0981/revendo-frontend:${IMAGE_TAG:?Set IMAGE_TAG to a pushed commit SHA}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - revendo
+
+volumes:
+  revendo_uploads:
+
+networks:
+  revendo:
+    driver: bridge

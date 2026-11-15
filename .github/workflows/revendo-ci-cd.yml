@@ -1,0 +1,188 @@
+name: ReVendo CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revendo-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  frontend:
+    name: Frontend lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix client
+
+      - name: Lint frontend
+        run: npm run lint --prefix client
+
+      - name: Build frontend
+        run: npm run build --prefix client
+
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --prefix server
+
+      - name: Run backend tests
+        run: npm test --prefix server
+
+  docker-build:
+    name: Build Docker images (no push)
+    needs:
+      - frontend
+      - backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./client
+          file: ./client/Dockerfile
+          push: false
+          platforms: linux/amd64,linux/arm64
+          tags: varun0981/revendo-frontend:ci
+          cache-from: type=gha,scope=revendo-frontend
+          cache-to: type=gha,mode=max,scope=revendo-frontend
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./server
+          file: ./server/Dockerfile
+          push: false
+          platforms: linux/amd64,linux/arm64
+          tags: varun0981/revendo-backend:ci
+          cache-from: type=gha,scope=revendo-backend
+          cache-to: type=gha,mode=max,scope=revendo-backend
+
+  docker-push:
+    name: Push Docker images to Docker Hub
+    needs:
+      - frontend
+      - backend
+      - docker-build
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'varun0981/ReVendo-app' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./client
+          file: ./client/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            varun0981/revendo-frontend:${{ github.sha }}
+            varun0981/revendo-frontend:latest
+          cache-from: type=gha,scope=revendo-frontend
+          cache-to: type=gha,mode=max,scope=revendo-frontend
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./server
+          file: ./server/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            varun0981/revendo-backend:${{ github.sha }}
+            varun0981/revendo-backend:latest
+          cache-from: type=gha,scope=revendo-backend
+          cache-to: type=gha,mode=max,scope=revendo-backend
+
+  deploy-ec2:
+    name: Deploy to EC2 (disabled by default)
+    needs: docker-push
+    if: ${{ vars.ENABLE_EC2_DEPLOY == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'varun0981/ReVendo-app' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+    steps:
+      - name: Check out deployment configuration
+        uses: actions/checkout@v4
+
+      - name: Deploy images over verified SSH
+        run: bash .github/scripts/deploy-ec2.sh
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          EC2_SSH_PORT: ${{ vars.EC2_SSH_PORT || '22' }}
+          EC2_DEPLOY_PATH: ${{ vars.EC2_DEPLOY_PATH }}
+          IMAGE_TAG: ${{ github.sha }}
+          JWT_SECRET: ${{ secrets.PRODUCTION_JWT_SECRET }}
+          MONGO_URI: ${{ secrets.PRODUCTION_MONGO_URI }}
+          CLIENT_URL: ${{ vars.PRODUCTION_CLIENT_URL }}
+          SMTP_HOST: ${{ secrets.PRODUCTION_SMTP_HOST }}
+          SMTP_PORT: ${{ vars.PRODUCTION_SMTP_PORT || '587' }}
+          SMTP_SECURE: ${{ vars.PRODUCTION_SMTP_SECURE || 'false' }}
+          SMTP_USER: ${{ secrets.PRODUCTION_SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.PRODUCTION_SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ vars.PRODUCTION_EMAIL_FROM }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.PRODUCTION_TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.PRODUCTION_TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM_NUMBER: ${{ secrets.PRODUCTION_TWILIO_FROM_NUMBER }}
