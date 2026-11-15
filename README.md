@@ -69,6 +69,46 @@ ReVendo is a responsive marketplace for buying and selling pre-loved products. I
 
    Open [http://localhost:5173](http://localhost:5173). The API runs at `http://localhost:5051`; check it with `GET /api/health`.
 
+## Docker Compose
+
+Docker Desktop (or Docker Engine) with the Compose plugin is required.
+
+1. Create a root-level Compose environment file and replace the example JWT secret with a random value of at least 32 characters:
+
+   ```bash
+   cp .env.example .env
+   openssl rand -base64 48
+   ```
+
+   The example uses an internal MongoDB container for local testing. The `.env` file is ignored by Git and is not copied into either image. If a secret contains `$`, use single quotes around its value in `.env`.
+
+2. Build and start the complete stack:
+
+   ```bash
+   docker compose config --quiet
+   docker compose up --build -d
+   docker compose ps
+   curl --fail http://localhost:8080/api/health
+   ```
+
+   Browse to [http://localhost:8080](http://localhost:8080). Nginx serves the React app and proxies `/api` and `/uploads` to the backend. The backend health check gates frontend startup. MongoDB and the backend are not published directly to the host.
+
+3. Optional development data and troubleshooting:
+
+   ```bash
+   docker compose exec backend npm run seed
+   docker compose exec backend npm run seed:admin
+   docker compose logs -f backend frontend
+   ```
+
+   Before running `seed:admin`, set a private `ADMIN_EMAIL` and `ADMIN_PASSWORD` (12–72 characters) in `.env`; these are blank in the example. With the default `NODE_ENV=development`, the email verification link appears in backend logs and the simulated phone OTP is `123456`; neither sends real messages. Uploaded product images and the local MongoDB data persist in named Docker volumes. `docker compose down` stops containers but preserves those volumes.
+
+### MongoDB Atlas
+
+To use Atlas instead of the bundled local MongoDB, set `MONGO_URI` in the root `.env` to your `mongodb+srv://` connection string. URL-encode special characters in the database username and password, and allow the Docker host's egress IP in Atlas Network Access. Keep the URI only in `.env`; Compose passes it to the backend at runtime and never builds it into an image. The local MongoDB container remains unexposed and is unused by the backend.
+
+For a production deployment, set `NODE_ENV=production`, use HTTPS at the public edge, configure real mail/SMS delivery as needed, and keep all credentials in a deployment secret manager or an untracked environment file.
+
 ## Local verification modes
 
 - **Email:** without SMTP settings, verification uses a development link printed by the server. No email is sent.
